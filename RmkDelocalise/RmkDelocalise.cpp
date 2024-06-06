@@ -201,7 +201,7 @@ struct {
 char* gStatusStack[10] = {};
 char** gStatusPtr = gStatusStack;
 
-char gStatusAccum[10][100] = {};
+char gStatusAccum[10][0x200] = {};
 
 std::string gEncoding = "";// = "ibm-943_P15A-2003";
 //std::string gGameDir = std::string(u8"D:\\DocumentsFolder\\Yume nikki stuff\\ゆめにっき\\ゆめにっき0.10");
