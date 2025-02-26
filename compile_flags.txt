@@ -1,0 +1,13 @@
+-std=c++17
+-fpermissive
+-lexpat
+-licuuc
+-licudt
+-licuio
+-licutu
+-licuin
+-licu
+-linih
+-lz
+-Iliblcf/src
+-Iliblcf/src/generated

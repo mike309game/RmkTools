@@ -1,43 +1,35 @@
 // RmkDelocalise.cpp : Defines the entry point for the application.
 //
 
+#ifdef _WIN32
+//#pragma message "is windows"
 #define _CRT_SECURE_NO_WARNINGS
 #define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
 #define UNICODE
 #define _UNICODE
-
-#if WIN32
 #include <Windows.h>
-#endif
-
-#ifdef _MSC_VER
-#include "getopt.h"
 #else
-#include <unistd.h>
+#define MAX_PATH (260)
 #endif
 
-#include "RmkDelocalise.h"
-#include <algorithm>
-#include <filesystem>
-#include <ctime>
-#include <iomanip>
-#include <iostream>
-#include <fstream>
-#include <regex>
-#include <sstream>
-#include <string>
-#include <cassert>
+#include <lcf/reader_util.h>
+#include <lcf/reader_lcf.h>
+#include <lcf/rpg/event.h>
 #include <lcf/ldb/reader.h>
 #include <lcf/lmt/reader.h>
 #include <lcf/lmu/reader.h>
-#include <lcf/rpg/moveroute.h>
-#include <lcf/reader_util.h>
-#include <lcf/writer_lcf.h>
-#include <unordered_map>
+
+#include <string>
+#include <vector>
+#include <iostream>
+#include <fstream>
 #include <filesystem>
-#include <sys/stat.h>
-#include <sys/utime.h>
+#include <cstdlib>
+#include <cstdarg>
+#include <cstdio>
+#include <cstring>
+#include <unistd.h>
 
 
 
@@ -47,7 +39,7 @@ extern "C" {
 }
 
 void NullFileTime(std::string& file) { //semi working doesn't work w folders
-#if WIN32
+#ifdef _WIN32
 
 	int wstrlen = MultiByteToWideChar(CP_UTF8, 0, file.c_str(), -1, NULL, 0);
 	wchar_t* wstr = new wchar_t[wstrlen];
@@ -96,7 +88,9 @@ std::string md5tostr(uint8_t* digest) {
 	return std::string(str, 32);
 }
 
-std::string StringsMd5(std::vector<std::string>& strs) {
+// when this was msvc, it was std::vector<std::string>& and it worked fine,
+// but now gcc is yelling at me???
+std::string StringsMd5(std::vector<std::string> strs) {
 	MD5Context ctx = {};
 	md5Init(&ctx);
 	for (auto str : strs) {
@@ -149,7 +143,7 @@ const char* FOLDERLIST[] = {
 };
 
 const char* NOTFOUND = "Deloc_FileNotExist";
-//Extensions can be in upper/lowercase so this won't work with linux but who the fuck gives a shit
+/*//Extensions can be in upper/lowercase so this won't work with linux but who the fuck gives a shit
 const char* EXTS[] = {
 	".png",
 	".xyz",
@@ -159,7 +153,7 @@ const char* EXTS[] = {
 	".midi",
 	".bmp",
 	".avi"
-};
+};*/
 
 //List of commands mapping which will have a string that wants an asset
 const std::unordered_map<lcf::rpg::EventCommand::Code, const char*> gParamDest{
@@ -184,9 +178,12 @@ const std::unordered_map<lcf::rpg::EventCommand::Code, const char*> gParamDest{
 //can't devise any better way, cry about it
 // 
 //				   og file hash
-//				  (as a string
-//				   because i'm
-//				   a lazy fuck)			   folder		og fname	 trans fname
+//				  (as a stl string
+//				   because i  
+//				   dont know  
+//				   how a struct
+//				   or something
+//				   would work) 			   folder		og fname	 trans fname
 std::unordered_map<std::string, std::tuple<const char*, std::string, std::string>> gAssetMap{};
 
 struct {
@@ -198,11 +195,6 @@ struct {
 	bool removeDates = { 0 };
 } gOpt;
 
-char* gStatusStack[10] = {};
-char** gStatusPtr = gStatusStack;
-
-char gStatusAccum[10][0x200] = {};
-
 std::string gEncoding = "";// = "ibm-943_P15A-2003";
 //std::string gGameDir = std::string(u8"D:\\DocumentsFolder\\Yume nikki stuff\\ゆめにっき\\ゆめにっき0.10");
 std::string gGameDir = "";
@@ -210,22 +202,30 @@ std::string gTranslateDir;
 
 lcf::EngineVersion gEngineVer;
 
-inline void PushStatus(char* status) {
-	*gStatusPtr++ = status;
+char gStatusAccum[0x7fff];
+char* gStatusPtr[20] = {gStatusAccum};
+int gStatusCount = 0;
+
+void PushStatus(const char* status, ...) {
+	va_list va;
+	auto ptr = gStatusPtr[gStatusCount];
+	va_start(va, status);
+	int len = vsnprintf(ptr, &gStatusAccum[sizeof(gStatusAccum)] - ptr, status, va);
+	va_end(va);
+	gStatusPtr[++gStatusCount] = ptr + len + 1;
 }
 inline void PopStatus() {
-	--gStatusPtr;
+	gStatusCount--;
 }
 void PrintStatus() {
-	for (char** ptr = gStatusStack; ptr < gStatusPtr; ptr++) {
-		std::cout << *ptr;
-	}
+	for (int i = 0; i < gStatusCount; ++i)
+		std::cout << gStatusPtr[i];
 }
 
 //Please tell me a better way to do this
 std::string AssetMapToString() {
 	std::unordered_map<const char*, std::vector<std::tuple<std::string, std::string>>> map;
-	for (auto i : FOLDERLIST) { //create vectors
+	for (auto i : FOLDERLIST) { //create vectorss
 		map[i] = std::vector<std::tuple<std::string, std::string>>();
 	}
 	for (auto& entry : gAssetMap) {
@@ -248,12 +248,13 @@ std::string AssetMapToString() {
 }
 
 //I'm not the smartest
-const char* FindActualFolderPtr(std::string str) { for (auto i : FOLDERLIST) if (str == i) return i; }
+const char* FindActualFolderPtr(std::string str) { for (auto i : FOLDERLIST) if (str == i) return i; perror("bad happened"); return NULL;}
 
 void FileToAssetMap(std::ifstream& f) { //untested
 	const char* folder = "youstupid";
 	std::string line;
 	while (!std::getline(f, line).eof()) { //*might* require last line in file to be empty newline idfk
+		if(line[0] == '#') continue;
 		if (line[0] == '>') {
 			folder = FindActualFolderPtr(line.substr(1));
 		}
@@ -261,7 +262,7 @@ void FileToAssetMap(std::ifstream& f) { //untested
 			auto pipePos = line.find('|');
 			auto ogFile = line.substr(0, pipePos);
 			auto transFile = line.substr(pipePos + 1);
-			auto checksum = StringsMd5(std::vector<std::string> { folder, ogFile.substr(0, ogFile.find_last_of('.')) });
+			auto checksum = StringsMd5(/*std::vector<std::string>*/ { folder, ogFile.substr(0, ogFile.find_last_of('.')) });
 			gAssetMap[checksum] = std::tuple<const char*, std::string, std::string>(folder, ogFile, transFile);
 		}
 	}
@@ -297,6 +298,11 @@ void EncodeInt(int val, std::vector<int32_t>& codes) {
 
 lcf::DBString DecodeString(lcf::DBArray<int32_t>::const_iterator& it) {
 	int len = DecodeInt(it);
+	if(len >= MAX_PATH) {
+		std::advance(it, len);
+		puts("way too long string");
+		return "this string is way too long";
+	}
 	char out[MAX_PATH] = {};
 
 	for (int i = 0; i < len; i++)
@@ -360,15 +366,15 @@ lcf::DBArray<int32_t> MoveRouteToCommandParams(lcf::rpg::MoveRoute& moveRoute, i
 	for (auto& cmd : moveRoute.move_commands) {
 		codes.push_back(cmd.command_id);
 		switch (cmd.command_id) {
-		case 32:
-		case 33:
+		case 32: // Switch ON
+		case 33: // Switch OFF
 			EncodeInt(cmd.parameter_a, codes);
 			break;
-		case 34:
+		case 34: // Change Graphic
 			EncodeString(cmd.parameter_string, codes);
 			EncodeInt(cmd.parameter_a, codes);
 			break;
-		case 35:
+		case 35: // Play Sound Effect
 			EncodeString(cmd.parameter_string, codes);
 			EncodeInt(cmd.parameter_a, codes);
 			EncodeInt(cmd.parameter_b, codes);
@@ -397,7 +403,7 @@ ProcessAsset(_folder, gSoundFix); \
 _member = lcf::ToString(gSoundFix); \
 PopStatus();
 
-const char* FindAssetExt(const char* dir, lcf::DBString& name) {
+/*const char* FindAssetExt(const char* dir, lcf::DBString& name) {
 	std::ifstream ifs;
 	std::string path = gGameDir + "/" + dir + "/" + lcf::ToString(name);
 	for (auto ext : EXTS) {
@@ -406,10 +412,39 @@ const char* FindAssetExt(const char* dir, lcf::DBString& name) {
 			ifs.close();
 			return ext;
 		}
+		ifs.close();
 	}
 	if (gOpt.alertNotFound) {
 		PrintStatus();
 		std::cout << " FILE NOT FOUND: " << dir << "/" << lcf::ToString(name) << std::endl;
+	}
+	return NOTFOUND;
+}*/
+
+// see, this works, but now it takes significantly longer for the tool to execute
+std::string FindAssetExt(const char* kind, std::string_view path) {
+	auto last = path.find_last_of("\\/");
+	std::string dir;
+	std::string name;
+	if(last == std::string::npos) {
+		dir.assign(gGameDir + "/" + kind);
+		name.assign(path);
+	}
+	else {
+		dir.assign(gGameDir + "/" + kind + "/" + std::string(path.substr(0, last))); // this is fine
+		name.assign(std::string(path.substr(last+1)));
+	}
+	for(const auto& entry : std::filesystem::directory_iterator(dir)) {
+		if(entry.is_directory())
+			continue;
+		// THIS IS FINE
+		if(strcasecmp(name.c_str(), entry.path().stem().generic_string().c_str()) == 0) {
+			return entry.path().filename().extension().generic_string();
+		}
+	}
+	if(gOpt.alertNotFound) {
+		PrintStatus();
+		std::cout << " FILE NOT FOUND: " << dir << "/" << path << std::endl;
 	}
 	return NOTFOUND;
 }
@@ -420,11 +455,11 @@ void ProcessAsset(const char* folder, lcf::DBString& name) {
 	//i don't know how to deal with that. let's just hope the fabric of reality doesn't collapse onto itself.
 	if (namestr == "(OFF)" || namestr.empty() /* || namestr.find("..") == 0*/) return;
 
-	auto checksum = StringsMd5(std::vector<std::string> { folder, namestr });
+	auto checksum = StringsMd5(/*std::vector<std::string>*/ { folder, namestr });
 
 	auto found = gAssetMap.find(checksum);
 	if (found == gAssetMap.end()) { //not in map
-		const char* ext = FindAssetExt(folder, name);
+		auto ext = FindAssetExt(folder, name.c_str());
 		if (ext == NOTFOUND) return; //do nothing if there's no file to begin with
 		std::string finalName = gOpt.hashWhenNotFound ? checksum : namestr;
 		gAssetMap[checksum] = std::tuple<const char*, std::string, std::string>(folder, namestr + ext, finalName + ext);
@@ -451,18 +486,18 @@ void DoMoveRoute(lcf::rpg::MoveRoute& moveRoute) {
 
 void DoCommandList(std::vector<lcf::rpg::EventCommand>& list) {
 	for (auto& cmd : list) {
-		sprintf(gStatusAccum[1], "Do command %s/", lcf::rpg::EventCommand::kCodeTags.tag(cmd.code));
-		PushStatus(gStatusAccum[1]);
+		PushStatus("Do command %s/", lcf::rpg::EventCommand::kCodeTags.tag(cmd.code));
 		auto code = (lcf::rpg::EventCommand::Code)cmd.code;
 		if (code == lcf::rpg::EventCommand::Code::MoveEvent) {
 			auto moveRoute = CommandParamsToMoveRoute(cmd.parameters);
 			DoMoveRoute(moveRoute);
 			cmd.parameters = MoveRouteToCommandParams(moveRoute, cmd.parameters[0], cmd.parameters[1]);
-		}
-		auto found = gParamDest.find(code);
-		if (found != gParamDest.end()) {
-			auto dir = found->second;
-			DOASSET(dir, cmd.string);
+		} else {
+			auto found = gParamDest.find(code);
+			if (found != gParamDest.end()) {
+				auto dir = found->second;
+				DOASSET(dir, cmd.string);
+			}
 		}
 		PopStatus();
 	}
@@ -472,35 +507,29 @@ void DoLdb(lcf::rpg::Database* db) {
 	gEngineVer = db->system.ldb_id == 2003 ? lcf::EngineVersion::e2k3 : lcf::EngineVersion::e2k;
 	PushStatus("Do Database/");
 	for (auto& actor : db->actors) {
-		sprintf(gStatusAccum[0], "Do actor %04d:%s/", actor.ID, actor.name.c_str());
-		PushStatus(gStatusAccum[0]);
+		PushStatus("Do actor %04d:%s/", actor.ID, actor.name.c_str());
 		DOASSET(FACESET, actor.face_name);
 		DOASSET(CHARSET, actor.character_name);
 		PopStatus();
 	}
 	for (auto& enemy : db->enemies) {
-		sprintf(gStatusAccum[0], "Do monster %04d:%s/", enemy.ID, enemy.name.c_str());
-		PushStatus(gStatusAccum[0]);
+		PushStatus("Do monster %04d:%s/", enemy.ID, enemy.name.c_str());
 		DOASSET(MONSTER, enemy.battler_name);
 		PopStatus();
 	}
 	for (auto& troop : db->troops) {
-		sprintf(gStatusAccum[0], "Do troop %04d:%s/", troop.ID, troop.name.c_str());
-		PushStatus(gStatusAccum[0]);
+		PushStatus("Do troop %04d:%s/", troop.ID, troop.name.c_str());
 		for (auto& page : troop.pages) {
-			sprintf(gStatusAccum[2], "Do troop page %04d/", page.ID);
-			PushStatus(gStatusAccum[2]);
+			PushStatus("Do troop page %04d/", page.ID);
 			DoCommandList(page.event_commands);
 			PopStatus();
 		}
 		PopStatus();
 	}
 	for (auto& anim : db->animations) {
-		sprintf(gStatusAccum[0], "Do anim %04d:%s/", anim.ID, anim.name.c_str());
-		PushStatus(gStatusAccum[0]);
+		PushStatus("Do anim %04d:%s/", anim.ID, anim.name.c_str());
 		for(auto& timing : anim.timings) {
-			sprintf(gStatusAccum[2], "Do timing %04d/", timing.ID);
-			PushStatus(gStatusAccum[2]);
+			PushStatus("Do timing %04d/", timing.ID);
 			DOSFX(SOUND, timing.se.name);
 			PopStatus();
 		}
@@ -513,25 +542,21 @@ void DoLdb(lcf::rpg::Database* db) {
 		PopStatus();
 	}
 	for (auto& anim2 : db->battleranimations) {
-		sprintf(gStatusAccum[0], "Do anim2 %04d:%s/", anim2.ID, anim2.name.c_str());
-		PushStatus(gStatusAccum[0]);
+		PushStatus("Do anim2 %04d:%s/", anim2.ID, anim2.name.c_str());
 		for (auto& pose : anim2.poses) {
-			sprintf(gStatusAccum[2], "Do pose %04d/", pose.ID);
-			PushStatus(gStatusAccum[2]);
+			PushStatus("Do pose %04d/", pose.ID);
 			DOASSET(BATTLECS, pose.battler_name);
 			PopStatus();
 		}
 		for (auto& weapon : anim2.weapons) {
-			sprintf(gStatusAccum[2], "Do weapon %04d/", weapon.ID);
-			PushStatus(gStatusAccum[2]);
+			PushStatus("Do weapon %04d/", weapon.ID);
 			DOASSET(BATTLEWP, weapon.weapon_name);
 			PopStatus();
 		}
 		PopStatus();
 	}
 	for (auto& terrain : db->terrains) {
-		sprintf(gStatusAccum[0], "Do terrain %04d:%s/", terrain.ID, terrain.name.c_str());
-		PushStatus(gStatusAccum[0]);
+		PushStatus("Do terrain %04d:%s/", terrain.ID, terrain.name.c_str());
 		DOASSET(FRAME, terrain.background_a_name);
 		DOASSET(FRAME, terrain.background_b_name);
 		DOASSET(BACKDROP, terrain.background_name);
@@ -539,8 +564,7 @@ void DoLdb(lcf::rpg::Database* db) {
 		PopStatus();
 	}
 	for (auto& chipset : db->chipsets) {
-		sprintf(gStatusAccum[0], "Do chipset %04d:%s/", chipset.ID, chipset.name.c_str());
-		PushStatus(gStatusAccum[0]);
+		PushStatus("Do chipset %04d:%s/", chipset.ID, chipset.name.c_str());
 		DOASSET(CHIPSET, chipset.chipset_name);
 		PopStatus();
 	}
@@ -579,8 +603,7 @@ void DoLdb(lcf::rpg::Database* db) {
 	DOASSET(FRAME, db->system.frame_name);
 
 	for (auto& ce : db->commonevents) {
-		sprintf(gStatusAccum[0], "Do common event %04d:%s/", ce.ID, ce.name.c_str());
-		PushStatus(gStatusAccum[0]);
+		PushStatus("Do common event %04d:%s/", ce.ID, ce.name.c_str());
 		DoCommandList(ce.event_commands);
 		PopStatus();
 	}
@@ -596,8 +619,7 @@ void DoLmu(lcf::rpg::Map* lmu) {
 	DOASSET(PANORAMA, lmu->parallax_name);
 	for (auto& event : lmu->events) {
 		for (auto& page : event.pages) {
-			sprintf(gStatusAccum[2], "Do event %04d:%s PAGE %d/", event.ID, event.name.c_str(), page.ID);
-			PushStatus(gStatusAccum[2]);
+			PushStatus("Do event %04d:%s PAGE %d/", event.ID, event.name.c_str(), page.ID);
 			DOASSET(CHARSET, page.character_name);
 			DoMoveRoute(page.move_route);
 			DoCommandList(page.event_commands);
@@ -611,8 +633,7 @@ void DoLmt(lcf::rpg::TreeMap* lmt) {
 	PushStatus("Do maps/");
 	for (auto& mapInfo : lmt->maps) {
 		if (mapInfo.ID == 0) continue; //id 0 is the game title for some reason
-		sprintf(gStatusAccum[0], "Do map %04d:%s/", mapInfo.ID, mapInfo.name.c_str());
-		PushStatus(gStatusAccum[0]);
+		PushStatus("Do map %04d:%s/", mapInfo.ID, mapInfo.name.c_str());
 		DOASSET(BACKDROP, mapInfo.background_name);
 		DOSFX(MUSIC, mapInfo.music.name);
 
@@ -662,22 +683,22 @@ void PrintUsage(char* a) {
 		"		Default is 932 (shift-jis).\n"
 		"		EXAMPLE: -c 932\n"
 		"\n"
-		"-C		Specify the codepage to use when reading arguments\n"
+		/*"-C		Specify the codepage to use when reading arguments\n"
 		"		given to this program. Default is the same as the\n"
 		"		game text codepage (shift-jis). MUST BE BEFORE ANY\n"
 		"		OTHER ARGUMENTS.\n"
-		"		EXAMPLE: -C 932\n", a
+		"		EXAMPLE: -C 932\n"*/, a
 	);
 }
 
 int main(int argc, char** argv)
 {
-#if WIN32
+#ifdef _WIN32
 	SetConsoleOutputCP(CP_UTF8); //set console to utf8 
 #endif
 	setlocale(LC_ALL, "en_US.UTF-8");
 	gEncoding = lcf::ReaderUtil::CodepageToEncoding(932);
-	std::string argEncoding = "";
+	//std::string argEncoding = "";
 
 	opterr = 0;
 	char c = 0;
@@ -695,9 +716,7 @@ int main(int argc, char** argv)
 			break;
 		case 'm':
 			{
-				std::ifstream f(lcf::ReaderUtil::Recode(optarg, (argEncoding.empty())
-					? gEncoding
-					: argEncoding));
+				std::ifstream f(optarg);
 				if (f.bad()) {
 					std::cerr << "Could not open asset map file" << std::endl; exit(-1);
 				}
@@ -713,13 +732,13 @@ int main(int argc, char** argv)
 			gOpt.printAssReverse = true;
 			break;
 		case 't':
-			gOpt.removeDates = true;
+			//gOpt.removeDates = true;
 			break;
 		case 'c':
 			gEncoding = lcf::ReaderUtil::CodepageToEncoding(atoi(optarg));
 			break;
 		case 'C':
-			argEncoding = lcf::ReaderUtil::CodepageToEncoding(atoi(optarg));
+			//argEncoding = lcf::ReaderUtil::CodepageToEncoding(atoi(optarg));
 			break;
 		case '?':
 			std::cerr << "Blah blah blah error" << std::endl;
@@ -732,18 +751,18 @@ int main(int argc, char** argv)
 	}
 
 	for (int i = optind; i < argc; i++) {
-		gGameDir = lcf::ReaderUtil::Recode(argv[i], (argEncoding.empty())
-			? gEncoding
-			: argEncoding);
+		gGameDir = argv[i];
 	}
 
 	if (gGameDir.empty()) {
+		PrintUsage(argv[0]);
 		std::cerr << "No game directory specified" << std::endl;
-		PrintUsage(argv[0]); exit(-1);
+		exit(-1);
 	}
 	else if (!std::filesystem::exists(gGameDir)) {
+		PrintUsage(argv[0]);
 		std::cerr << "Specified game directory does not exist" << std::endl;
-		PrintUsage(argv[0]); exit(-1);
+		exit(-1);
 	}
 	
 	gTranslateDir = gGameDir + "/" + "TRANSLATED";

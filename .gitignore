@@ -1,3 +1,7 @@
 out/
 build/
 .vs/
+myshit/
+obj*/
+bin*/
+*.exe

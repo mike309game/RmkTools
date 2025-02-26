@@ -1,3 +1,4 @@
+#pragma message "bad getopt included"
 #ifndef __GETOPT_H__
 /**
  * DISCLAIMER
