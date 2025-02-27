@@ -2,8 +2,6 @@
 
 This is a repo I'll use to publish some RPG Maker tools that I've created.
 
-Currently there is only one tool.
-
 ## RmkDelocalise
 
 ### Description
