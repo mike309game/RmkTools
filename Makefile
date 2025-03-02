@@ -21,18 +21,31 @@ CC := $(PREFIX)gcc$(BINEXT)
 CXX := $(PREFIX)g++$(BINEXT)
 
 CFLAGS = \
-	-Wa,--strip-local-absolute \
-	-fdata-sections \
-	-ffunction-sections \
 	-fdiagnostics-color=always \
 	-MMD -MP
 
 LDFLAGS = \
+	-lz
+
+ifeq ($(BUILDTYPE), debug)
+	CFLAGS += \
+	-Og \
+	-g
+endif
+
+# LTO has broken???
+
+ifeq ($(BUILDTYPE), release)
+	CFLAGS += \
+	-O3 -Wa,--strip-local-absolute \
+	-fdata-sections \
+	-ffunction-sections
+	LDFLAGS += \
 	-static \
 	-Wl,-gc-sections \
 	-static-libgcc \
-	-static-libstdc++ \
-	-lz
+	-static-libstdc++
+endif
 
 include lcf.mk
 
@@ -40,6 +53,8 @@ DelocaliseSRCS = \
 	utf8.rc \
 	RmkDelocalise/md5.c \
 	RmkDelocalise/RmkDelocalise.cpp \
+	RmkDelocalise/find.cpp \
+	RmkDelocalise/filetimes.cpp \
 	$(liblcf_SRCS)
 TxtXyzSRCS = \
 	utf8.rc \
@@ -65,12 +80,15 @@ DEPS += $(RouteDecodeSRCS:%=$(OBJDIR)/%.d)
 all: $(DelocaliseEXE) $(TxtXyzEXE) $(RouteDecodeEXE)
 
 $(DelocaliseEXE): $(DelocaliseOBJS)
+	$(call md,$(dir $@))
 	$(CXX) $(DelocaliseOBJS) -o $@ $(LDFLAGS)
 
 $(TxtXyzEXE): $(TxtXyzOBJS)
+	$(call md,$(dir $@))
 	$(CXX) $(TxtXyzOBJS) -o $@ $(LDFLAGS)
 	
 $(RouteDecodeEXE): $(RouteDecodeOBJS)
+	$(call md,$(dir $@))
 	$(CXX) $(RouteDecodeOBJS) -o $@ $(LDFLAGS)
 
 $(OBJDIR)/%.c.o: %.c
@@ -85,7 +103,8 @@ $(OBJDIR)/%.rc.o: %.rc
 	windres $< -o $@
 	
 clean:
-	rm -rf $(OBJDIR)
+	-rm -rf $(OBJDIR)
+	-rm -rf $(BINDIR)
 	
 # i yoinked this makefile from a dead project i don't know if this actually works
 -include $(DEPS)

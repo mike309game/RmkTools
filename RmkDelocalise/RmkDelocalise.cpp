@@ -1,90 +1,18 @@
 // RmkDelocalise.cpp : Defines the entry point for the application.
 //
 
-#ifdef _WIN32
-//#pragma message "is windows"
-#define _CRT_SECURE_NO_WARNINGS
-#define NOMINMAX
-#define WIN32_LEAN_AND_MEAN
-#define UNICODE
-#define _UNICODE
-#include <Windows.h>
-#else
-#define MAX_PATH (260)
-#endif
-
-#include <lcf/reader_util.h>
-#include <lcf/reader_lcf.h>
-#include <lcf/rpg/event.h>
-#include <lcf/ldb/reader.h>
-#include <lcf/lmt/reader.h>
-#include <lcf/lmu/reader.h>
-
-#include <string>
-#include <vector>
-#include <iostream>
-#include <fstream>
+#include "RmkDelocalise.hh"
+#include "lcf/rpg/movecommand.h"
 #include <filesystem>
-#include <cstdlib>
-#include <cstdarg>
-#include <cstdio>
-#include <cstring>
-#include <unistd.h>
-
-
-
-
 extern "C" {
 #include "md5.h"
 }
 
-void NullFileTime(std::string& file) { //semi working doesn't work w folders
-#ifdef _WIN32
-
-	int wstrlen = MultiByteToWideChar(CP_UTF8, 0, file.c_str(), -1, NULL, 0);
-	wchar_t* wstr = new wchar_t[wstrlen];
-	MultiByteToWideChar(CP_UTF8, 0, file.c_str(), -1, wstr, wstrlen);
-
-	//"Creates or opens a file or I/O device.
-	// The most commonly used I/O devices are as follows:
-	// file, file stream, **directory**,
-	// physical disk, volume, console buffer,
-	// tape drive, communications resource, mailslot, and pipe."
-	// ^^^^^^^^ fat fucking lie it does not open directories
-	HANDLE hFile = CreateFileW(wstr, GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, FILE_WRITE_ATTRIBUTES, NULL);
-	delete[] wstr;
-	if (hFile == INVALID_HANDLE_VALUE) {
-		std::cerr << "Could not open file to set time?!?!?!?!" << std::endl; exit(-1);
-	}
-	FILE_BASIC_INFO b = {};
-	//apparently if i leave it at zero it does nothing, so 1 it'll be
-	b.LastWriteTime.QuadPart = 1ll;
-	b.ChangeTime.QuadPart = 1ll;
-	b.CreationTime.QuadPart = 1ll;
-	b.LastAccessTime.QuadPart = 1ll;
-	BY_HANDLE_FILE_INFORMATION bb;
-	GetFileInformationByHandle(hFile, &bb);
-	b.FileAttributes = bb.dwFileAttributes;
-	SetFileInformationByHandle(hFile, FileBasicInfo, &b, sizeof(b));
-	CloseHandle(hFile);
-#else
-	struct utimbuf t;
-	t.actime = 0;
-	t.modtime = 0;
-	utime(file.c_str(), &t);
-#endif
-}
-
 std::string md5tostr(uint8_t* digest) {
-	//reuse buffers because i can
-	static char str[16 * 2 + 1] = {};
-	static char buf[2 + 1] = {};
-	str[0] = 0;
-
-	for (unsigned int i = 0; i < 16; ++i) {
-		sprintf(buf, "%02x", digest[i]);
-		strcat(str, buf);
-	}
+	char str[16 * 2 + 1];
+	sprintf(str, "%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x",
+			digest[0], digest[1], digest[2], digest[3], digest[4], digest[5], digest[6], digest[7],
+			digest[8], digest[9], digest[10], digest[11], digest[12], digest[13], digest[14], digest[15]);
 	return std::string(str, 32);
 }
 
@@ -142,7 +70,6 @@ const char* FOLDERLIST[] = {
 	TITLE ,
 };
 
-const char* NOTFOUND = "Deloc_FileNotExist";
 /*//Extensions can be in upper/lowercase so this won't work with linux but who the fuck gives a shit
 const char* EXTS[] = {
 	".png",
@@ -186,14 +113,7 @@ const std::unordered_map<lcf::rpg::EventCommand::Code, const char*> gParamDest{
 //				   would work) 			   folder		og fname	 trans fname
 std::unordered_map<std::string, std::tuple<const char*, std::string, std::string>> gAssetMap{};
 
-struct {
-	bool hashWhenNotFound = { 0 };
-	bool alertNotFound = { 1 };
-	bool dryRun = { 0 };
-	bool printAssList = { 0 };
-	bool printAssReverse = { 0 };
-	bool removeDates = { 0 };
-} gOpt;
+opt gOpt;
 
 std::string gEncoding = "";// = "ibm-943_P15A-2003";
 //std::string gGameDir = std::string(u8"D:\\DocumentsFolder\\Yume nikki stuff\\ゆめにっき\\ゆめにっき0.10");
@@ -214,7 +134,7 @@ void PushStatus(const char* status, ...) {
 	va_end(va);
 	gStatusPtr[++gStatusCount] = ptr + len + 1;
 }
-inline void PopStatus() {
+void PopStatus() {
 	gStatusCount--;
 }
 void PrintStatus() {
@@ -238,10 +158,7 @@ std::string AssetMapToString() {
 	for (auto& entry : map) {
 		str << ">" << entry.first << std::endl;
 		for (auto& i : entry.second) {
-			if(gOpt.printAssReverse)
-				str << std::get<1>(i) << "|" << std::get<0>(i) << std::endl;
-			else
-				str << std::get<0>(i) << "|" << std::get<1>(i) << std::endl;
+			str << std::get<0>(i) << "|" << std::get<1>(i) << std::endl;
 		}
 	}
 	return str.str();
@@ -263,7 +180,10 @@ void FileToAssetMap(std::ifstream& f) { //untested
 			auto ogFile = line.substr(0, pipePos);
 			auto transFile = line.substr(pipePos + 1);
 			auto checksum = StringsMd5(/*std::vector<std::string>*/ { folder, ogFile.substr(0, ogFile.find_last_of('.')) });
-			gAssetMap[checksum] = std::tuple<const char*, std::string, std::string>(folder, ogFile, transFile);
+			if(gOpt.loadAssReverse)
+				gAssetMap[checksum] = std::tuple<const char*, std::string, std::string>(folder, transFile, ogFile);
+			else
+				gAssetMap[checksum] = std::tuple<const char*, std::string, std::string>(folder, ogFile, transFile);
 		}
 	}
 }
@@ -403,52 +323,6 @@ ProcessAsset(_folder, gSoundFix); \
 _member = lcf::ToString(gSoundFix); \
 PopStatus();
 
-/*const char* FindAssetExt(const char* dir, lcf::DBString& name) {
-	std::ifstream ifs;
-	std::string path = gGameDir + "/" + dir + "/" + lcf::ToString(name);
-	for (auto ext : EXTS) {
-		ifs.open(path + ext);
-		if (!ifs.fail()) {
-			ifs.close();
-			return ext;
-		}
-		ifs.close();
-	}
-	if (gOpt.alertNotFound) {
-		PrintStatus();
-		std::cout << " FILE NOT FOUND: " << dir << "/" << lcf::ToString(name) << std::endl;
-	}
-	return NOTFOUND;
-}*/
-
-// see, this works, but now it takes significantly longer for the tool to execute
-std::string FindAssetExt(const char* kind, std::string_view path) {
-	auto last = path.find_last_of("\\/");
-	std::string dir;
-	std::string name;
-	if(last == std::string::npos) {
-		dir.assign(gGameDir + "/" + kind);
-		name.assign(path);
-	}
-	else {
-		dir.assign(gGameDir + "/" + kind + "/" + std::string(path.substr(0, last))); // this is fine
-		name.assign(std::string(path.substr(last+1)));
-	}
-	for(const auto& entry : std::filesystem::directory_iterator(dir)) {
-		if(entry.is_directory())
-			continue;
-		// THIS IS FINE
-		if(strcasecmp(name.c_str(), entry.path().stem().generic_string().c_str()) == 0) {
-			return entry.path().filename().extension().generic_string();
-		}
-	}
-	if(gOpt.alertNotFound) {
-		PrintStatus();
-		std::cout << " FILE NOT FOUND: " << dir << "/" << path << std::endl;
-	}
-	return NOTFOUND;
-}
-
 void ProcessAsset(const char* folder, lcf::DBString& name) {
 	std::string namestr = lcf::ToString(name);
 	//2kki does some funky things with directory traversing, most notably with pc_back.png
@@ -472,21 +346,27 @@ void ProcessAsset(const char* folder, lcf::DBString& name) {
 }
 
 void DoMoveRoute(lcf::rpg::MoveRoute& moveRoute) {
-	for (auto& move : moveRoute.move_commands) {
+	for (int i = 0; i < moveRoute.move_commands.size(); ++i)
+	{
+		auto& move = moveRoute.move_commands[i];
+		PushStatus("[%d] %s", i, lcf::rpg::MoveCommand::kCodeTags.tag(move.command_id));
+		// call ProcessAsset directly to reduce redundancy 
 		switch (move.command_id) {
 		case 34:
-			DOASSET(CHARSET, move.parameter_string);
+			ProcessAsset(CHARSET, move.parameter_string);
 			break;
 		case 35:
-			DOASSET(SOUND, move.parameter_string);
+			ProcessAsset(SOUND, move.parameter_string);
 			break;
 		}
+		PopStatus();
 	}
 }
 
 void DoCommandList(std::vector<lcf::rpg::EventCommand>& list) {
-	for (auto& cmd : list) {
-		PushStatus("Do command %s/", lcf::rpg::EventCommand::kCodeTags.tag(cmd.code));
+	for(int i = 0; i < list.size(); i++) {
+		auto& cmd = list[i];
+		PushStatus("Command[%d] %s/", i, lcf::rpg::EventCommand::kCodeTags.tag(cmd.code));
 		auto code = (lcf::rpg::EventCommand::Code)cmd.code;
 		if (code == lcf::rpg::EventCommand::Code::MoveEvent) {
 			auto moveRoute = CommandParamsToMoveRoute(cmd.parameters);
@@ -505,31 +385,31 @@ void DoCommandList(std::vector<lcf::rpg::EventCommand>& list) {
 
 void DoLdb(lcf::rpg::Database* db) {
 	gEngineVer = db->system.ldb_id == 2003 ? lcf::EngineVersion::e2k3 : lcf::EngineVersion::e2k;
-	PushStatus("Do Database/");
+	PushStatus("LDB/");
 	for (auto& actor : db->actors) {
-		PushStatus("Do actor %04d:%s/", actor.ID, actor.name.c_str());
+		PushStatus("Actor[%04d] %s/", actor.ID, actor.name.c_str());
 		DOASSET(FACESET, actor.face_name);
 		DOASSET(CHARSET, actor.character_name);
 		PopStatus();
 	}
 	for (auto& enemy : db->enemies) {
-		PushStatus("Do monster %04d:%s/", enemy.ID, enemy.name.c_str());
+		PushStatus("Monster[%04d] %s/", enemy.ID, enemy.name.c_str());
 		DOASSET(MONSTER, enemy.battler_name);
 		PopStatus();
 	}
 	for (auto& troop : db->troops) {
-		PushStatus("Do troop %04d:%s/", troop.ID, troop.name.c_str());
+		PushStatus("Troop[%04d] %s/", troop.ID, troop.name.c_str());
 		for (auto& page : troop.pages) {
-			PushStatus("Do troop page %04d/", page.ID);
+			PushStatus("Page[%04d]/", page.ID);
 			DoCommandList(page.event_commands);
 			PopStatus();
 		}
 		PopStatus();
 	}
 	for (auto& anim : db->animations) {
-		PushStatus("Do anim %04d:%s/", anim.ID, anim.name.c_str());
+		PushStatus("Anim[%04d] %s/", anim.ID, anim.name.c_str());
 		for(auto& timing : anim.timings) {
-			PushStatus("Do timing %04d/", timing.ID);
+			PushStatus("Timing[%04d]/", timing.ID);
 			DOSFX(SOUND, timing.se.name);
 			PopStatus();
 		}
@@ -542,21 +422,21 @@ void DoLdb(lcf::rpg::Database* db) {
 		PopStatus();
 	}
 	for (auto& anim2 : db->battleranimations) {
-		PushStatus("Do anim2 %04d:%s/", anim2.ID, anim2.name.c_str());
+		PushStatus("Anim2[%04d] %s/", anim2.ID, anim2.name.c_str());
 		for (auto& pose : anim2.poses) {
-			PushStatus("Do pose %04d/", pose.ID);
+			PushStatus("Pose [%04d]/", pose.ID);
 			DOASSET(BATTLECS, pose.battler_name);
 			PopStatus();
 		}
 		for (auto& weapon : anim2.weapons) {
-			PushStatus("Do weapon %04d/", weapon.ID);
+			PushStatus("Weapon[%04d]/", weapon.ID);
 			DOASSET(BATTLEWP, weapon.weapon_name);
 			PopStatus();
 		}
 		PopStatus();
 	}
 	for (auto& terrain : db->terrains) {
-		PushStatus("Do terrain %04d:%s/", terrain.ID, terrain.name.c_str());
+		PushStatus("Terrain[%04d] %s/", terrain.ID, terrain.name.c_str());
 		DOASSET(FRAME, terrain.background_a_name);
 		DOASSET(FRAME, terrain.background_b_name);
 		DOASSET(BACKDROP, terrain.background_name);
@@ -564,7 +444,7 @@ void DoLdb(lcf::rpg::Database* db) {
 		PopStatus();
 	}
 	for (auto& chipset : db->chipsets) {
-		PushStatus("Do chipset %04d:%s/", chipset.ID, chipset.name.c_str());
+		PushStatus("Chipset[%04d] %s/", chipset.ID, chipset.name.c_str());
 		DOASSET(CHIPSET, chipset.chipset_name);
 		PopStatus();
 	}
@@ -603,14 +483,12 @@ void DoLdb(lcf::rpg::Database* db) {
 	DOASSET(FRAME, db->system.frame_name);
 
 	for (auto& ce : db->commonevents) {
-		PushStatus("Do common event %04d:%s/", ce.ID, ce.name.c_str());
+		PushStatus("Common event[%04d] %s/", ce.ID, ce.name.c_str());
 		DoCommandList(ce.event_commands);
 		PopStatus();
 	}
 	if (!gOpt.dryRun) {
-		std::string accum;
-		lcf::LDB_Reader::Save(accum = (gTranslateDir + "/RPG_RT.ldb"), *db, gEncoding);
-		if (gOpt.removeDates) NullFileTime(accum);
+		lcf::LDB_Reader::Save(gTranslateDir + "/RPG_RT.ldb", *db, gEncoding);
 	}
 	PopStatus();
 }
@@ -618,22 +496,29 @@ void DoLdb(lcf::rpg::Database* db) {
 void DoLmu(lcf::rpg::Map* lmu) {
 	DOASSET(PANORAMA, lmu->parallax_name);
 	for (auto& event : lmu->events) {
+		PushStatus("Event[%04d] %s @ [%03d,%03d]/", event.ID, event.name.c_str(), event.x, event.y);
 		for (auto& page : event.pages) {
-			PushStatus("Do event %04d:%s PAGE %d/", event.ID, event.name.c_str(), page.ID);
+			PushStatus("PAGE[%02d]/", page.ID);
+
 			DOASSET(CHARSET, page.character_name);
+
+			PushStatus("Move route/");
 			DoMoveRoute(page.move_route);
+			PopStatus();
+
 			DoCommandList(page.event_commands);
+
 			PopStatus();
 		}
+		PopStatus();
 	}
 }
 
 void DoLmt(lcf::rpg::TreeMap* lmt) {
-	std::string accum;
-	PushStatus("Do maps/");
+	PushStatus("LMT/");
 	for (auto& mapInfo : lmt->maps) {
 		if (mapInfo.ID == 0) continue; //id 0 is the game title for some reason
-		PushStatus("Do map %04d:%s/", mapInfo.ID, mapInfo.name.c_str());
+		PushStatus("Map[%04d] %s/", mapInfo.ID, mapInfo.name.c_str());
 		DOASSET(BACKDROP, mapInfo.background_name);
 		DOSFX(MUSIC, mapInfo.music.name);
 
@@ -643,15 +528,13 @@ void DoLmt(lcf::rpg::TreeMap* lmt) {
 		if (lmu) { //2kki lmt references deleted maps
 			DoLmu(lmu.get());
 			if (!gOpt.dryRun) {
-				lcf::LMU_Reader::Save(accum = (gTranslateDir + mapname), *lmu, gEngineVer, gEncoding);
-				if (gOpt.removeDates) NullFileTime(accum);
+				lcf::LMU_Reader::Save(gTranslateDir + mapname, *lmu, gEngineVer, gEncoding);
 			}
 		}
 		PopStatus();
 	}
 	if (!gOpt.dryRun) {
-		lcf::LMT_Reader::Save(accum = (gTranslateDir + "/RPG_RT.lmt"), *lmt, gEngineVer, gEncoding);
-		if (gOpt.removeDates) NullFileTime(accum);
+		lcf::LMT_Reader::Save(gTranslateDir + "/RPG_RT.lmt", *lmt, gEngineVer, gEncoding);
 	}
 	PopStatus();
 }
@@ -670,15 +553,17 @@ void PrintUsage(char* a) {
 		"-u		DO NOT warn about assets that do not exist.\n" //"unused"
 		"\n"
 		"-m		Provide a file that describes the asset map.\n"
-		"		EXAMPLE: -p ./assetmap.txt\n"
+		"		EXAMPLE: -m ./assetmap.txt\n"
 		"\n"
 		"-M		Print the asset map after execution.\n"
 		"\n"
-		"-R		Print the asset map but invert the positions of the\n"
-		"		original file and the translated file.\n"
+		"-r		Load provided asset map in reverse, if any.\n"
 		"\n"
-		//"-t		Redact timestamps from the translated files.\n" //barely works
+		// frankly this is fucking useless
+		//"-t		Set timestamps from the translated files to the year 2000.\n"
 		//"\n"
+		"-D		DO NOT alert about identically named files.\n"
+		"\n"
 		"-c		Specify the codepage to use when reading game text.\n"
 		"		Default is 932 (shift-jis).\n"
 		"		EXAMPLE: -c 932\n"
@@ -703,7 +588,7 @@ int main(int argc, char** argv)
 	opterr = 0;
 	char c = 0;
 	//pissed off at my inconsistent usage of stl and c functions? GOOD
-	while ((c = getopt(argc, argv, "dhum:MRtc:C:")) != -1) { 
+	while ((c = getopt(argc, argv, "dhum:Mrtc:D")) != -1) { 
 		switch (c) {
 		case 'd':
 			gOpt.dryRun = true;
@@ -718,7 +603,7 @@ int main(int argc, char** argv)
 			{
 				std::ifstream f(optarg);
 				if (f.bad()) {
-					std::cerr << "Could not open asset map file" << std::endl; exit(-1);
+					std::cout << "Could not open asset map file" << std::endl; exit(-1);
 				}
 				FileToAssetMap(f);
 				f.close();
@@ -728,20 +613,19 @@ int main(int argc, char** argv)
 			gOpt.printAssList = true;
 			break;
 		case 'R':
-			gOpt.printAssList = true;
-			gOpt.printAssReverse = true;
+			gOpt.loadAssReverse = true;
 			break;
 		case 't':
-			//gOpt.removeDates = true;
+			gOpt.removeDates = true;
 			break;
 		case 'c':
 			gEncoding = lcf::ReaderUtil::CodepageToEncoding(atoi(optarg));
 			break;
-		case 'C':
-			//argEncoding = lcf::ReaderUtil::CodepageToEncoding(atoi(optarg));
+		case 'D':
+			gOpt.alertDupeFiles = false;
 			break;
 		case '?':
-			std::cerr << "Blah blah blah error" << std::endl;
+			std::cout << "Blah blah blah error" << std::endl;
 			abort();
 			break;
 		default:
@@ -756,12 +640,12 @@ int main(int argc, char** argv)
 
 	if (gGameDir.empty()) {
 		PrintUsage(argv[0]);
-		std::cerr << "No game directory specified" << std::endl;
+		std::cout << "No game directory specified" << std::endl;
 		exit(-1);
 	}
 	else if (!std::filesystem::exists(gGameDir)) {
 		PrintUsage(argv[0]);
-		std::cerr << "Specified game directory does not exist" << std::endl;
+		std::cout << "Specified game directory does not exist" << std::endl;
 		exit(-1);
 	}
 	
@@ -769,15 +653,13 @@ int main(int argc, char** argv)
 	if (!gOpt.dryRun) {
 		if (!std::filesystem::exists(gTranslateDir)) {
 			std::filesystem::create_directory(gTranslateDir);
-			if (gOpt.removeDates) NullFileTime(gTranslateDir);
-			for (auto dir : FOLDERLIST) {
+			/*for (auto dir : FOLDERLIST) {
 				std::string accum;
 				std::filesystem::create_directory(accum = (gTranslateDir + "/" + dir));
-				if (gOpt.removeDates) NullFileTime(accum);
-			}
+			}*/
 		}
 		else {
-			std::cerr << "Conversion directory already exists; enabling dry run flag" << std::endl;
+			std::cout << "Conversion directory already exists; enabling dry run flag" << std::endl;
 			gOpt.dryRun = true;
 		}
 	}
@@ -792,23 +674,27 @@ int main(int argc, char** argv)
 		std::cout << AssetMapToString() << std::endl;
 	}
 
+	// Copy everything over now, translated
 	if (!gOpt.dryRun) {
-		std::string accum;
-		std::filesystem::copy(gGameDir + "/RPG_RT.ini", accum = (gTranslateDir + "/RPG_RT.ini")); 
-		std::filesystem::copy(gGameDir + "/RPG_RT.exe", accum = (gTranslateDir + "/RPG_RT.exe")); 
+		try {std::filesystem::copy(gGameDir + "/RPG_RT.ini", gTranslateDir + "/RPG_RT.ini"); } catch (...) {}
+		try {std::filesystem::copy(gGameDir + "/RPG_RT.exe", gTranslateDir + "/RPG_RT.exe"); } catch (...) {}
+		try {std::filesystem::copy(gGameDir + "/ultimate_rt_eb.dll", gTranslateDir + "/ultimate_rt_eb.dll"); } catch (...) {}
 		for (auto& entry : gAssetMap) {
 			auto& tuple = entry.second;
 			auto outFile = gTranslateDir + "/" + std::get<0>(tuple) + "/" + std::get<2>(tuple);
-			//yes, i have to handle this because of 2kki directory traversing that reutilises files
-			if (!std::filesystem::exists(outFile)) {
-				std::filesystem::copy(
-					gGameDir + "/" + std::get<0>(tuple) + "/" + std::get<1>(tuple),
-					outFile);
+			std::replace(outFile.begin(), outFile.end(), '\\', '/'); //again, this path class has an aneurysm with backslashes
+			auto outPath = std::filesystem::path(outFile);
+			if(!std::filesystem::exists(outPath.parent_path())) { // fuck off ゆめ2っき\Sound\marimba
+				std::filesystem::create_directories(outPath.parent_path());
 			}
-			if (gOpt.removeDates) {
-				NullFileTime(outFile);
+			//yes, i have to handle this because of 2kki directory traversing that reutilises files
+			if (!std::filesystem::exists(outPath)) {
+				std::filesystem::copy_file(
+					gGameDir + "/" + std::get<0>(tuple) + "/" + std::get<1>(tuple), outPath);
 			}
 		}
+		if(gOpt.removeDates)
+			NullDirectoryTimes(gTranslateDir);
 	}
 
 	return 0;

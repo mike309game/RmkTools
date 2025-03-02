@@ -15,13 +15,16 @@ This tool also has a second purpose for encountering references to deleted resou
 
 And a *third* purpose, which is translating file names and updating references to them in the game.
 
-
 This tool uses [md5-c](https://github.com/Zunawe/md5-c/).
+
+### Note
+
+This tool might not work on case-sensitive systems (linux) due to some games (2kki) refering to directories (../music, when the actual folder name is Music) with different capitalization.
 
 ### Usage
 
 ```
-USAGE: RmkDelocalise.exe [switches] /game/directory
+USAGE: RmkDelocalise [switches] /game/directory
 -d              Enables dry run (does not write any files).
                 Using only this switch is useful to find references to
                 deleted game resources.
@@ -33,12 +36,13 @@ USAGE: RmkDelocalise.exe [switches] /game/directory
 -u              DO NOT warn about assets that do not exist.
 
 -m              Provide a file that describes the asset map.
-                EXAMPLE: -p ./assetmap.txt
+                EXAMPLE: -m ./assetmap.txt
 
 -M              Print the asset map after execution.
 
--R              Print the asset map but invert the positions of the
-                original file and the translated file.
+-r              Load provided asset map in reverse, if any.
+
+-D              DO NOT alert about identically named files.
 
 -c              Specify the codepage to use when reading game text.
                 Default is 932 (shift-jis).
@@ -60,15 +64,15 @@ origfile.png|transfile.png //the name of the file in the original game directory
 
 `RmkDelocalise -h /game/dir` will recreate the game directory, but all files will have been renamed to a hash of themselves and the folder they reside in. This removes any locale dependencies to run the game without crashes, however obviously the game text will remain unchanged.
 
-`RmkDelocalise -uM /game/dir` will output the generated asset map without any warnings to unused files. The resulting output is in a format that can be fed back to `-m`. This is useful for translating file names.
+`RmkDelocalise -duDM /game/dir` will output the generated asset map without any warnings of unused files or identical filenames. The resulting output is in a format that can be fed back to `-m`. This is useful for translating file names.
 
 If you wish to ship your game without locale dependence, but still wish for users to be able to view the original directory structure:
 
-`RmkDelocalise -uhR /game/dir > assetmap.txt`
+`RmkDelocalise -uDhM /game/dir > assetmap.txt`
 
 Then ship your game with `assetmap.txt`, and users can get the original directory structure by doing:
 
-`RmkDelocalise -u -m assetmap.txt /game/dir`
+`RmkDelocalise -uDr -m assetmap.txt /game/dir`
 
 ## TxtXyz
 
